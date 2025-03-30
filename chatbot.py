@@ -278,7 +278,81 @@ class TherapyBot:
         }
 
 
-def create_mood_timeline(mood_data):
+    def create_mood_timeline(mood_data):
+    if not mood_data:
+        return None
+
+    df = pd.DataFrame(mood_data)
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+
+    # Map categorical moods to numeric values for plotting
+    mood_value_map = {
+        'positive': 3,
+        'neutral': 2,
+        'negative': 1
+    }
+    
+    # Create a numerical column for mood
+    df['mood_value'] = df['mood'].map(mood_value_map)
+
+    fig = px.line(df, x='timestamp', y='mood_value',
+                  title='Mood Timeline')
+    
+    # Customize y-axis to show original mood labels
+    fig.update_layout(
+        yaxis=dict(
+            tickmode='array',
+            tickvals=[1, 2, 3],
+            ticktext=['negative', 'neutral', 'positive']
+        )
+    )
+    
+    # Add intensity as a secondary axis if available
+    if 'intensity' in df.columns:
+        fig.add_scatter(
+            x=df['timestamp'],
+            y=df['intensity'],
+            mode='lines+markers',
+            name='Emotional Intensity',
+            yaxis="y2",
+            line=dict(color='#E91E63', width=1, dash='dot'),
+            marker=dict(size=8)
+        )
+        
+        # Add secondary y-axis with corrected properties
+        fig.update_layout(
+            yaxis2=dict(
+                title="Intensity",
+                title_font=dict(color='#E91E63'),  # Corrected from titlefont to title_font
+                tickfont=dict(color='#E91E63'),
+                anchor="x",
+                overlaying="y",
+                side="right",
+                range=[0, 10],
+                showgrid=False
+            )
+        )
+
+    fig.update_layout(
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        font_color='#ffffff',
+        title_font_color='#ffffff',  # Corrected from title_font_color
+        height=300,
+        xaxis=dict(
+            showgrid=True,
+            gridcolor='rgba(255,255,255,0.1)',
+            tickfont=dict(color='#ffffff')
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor='rgba(255,255,255,0.1)',
+            tickfont=dict(color='#ffffff')
+        )
+    )
+
+    return fig
+
     if not mood_data:
         return None
 
