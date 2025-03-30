@@ -21,17 +21,9 @@ class TherapyBot:
             st.error("Groq API key not found in secrets. Please add it to your secrets.toml file.")
             st.stop()
             
-        # Initialize main conversation LLM
         self.llm = ChatGroq(
             model="llama-3.3-70b-versatile",
             temperature=0.5,
-            groq_api_key=st.secrets["groq_api_key"]
-        )
-        
-        # Initialize sentiment analysis LLM with lower temperature for consistency
-        self.sentiment_llm = ChatGroq(
-            model="llama-3.3-70b-versatile",
-            temperature=0.1,
             groq_api_key=st.secrets["groq_api_key"]
         )
 
@@ -40,7 +32,6 @@ class TherapyBot:
             return_messages=True
         )
 
-        # Main conversation prompt
         self.system_prompt = """You are Aria, an empathetic AI therapeutic assistant. Your role is to:
         1. Listen actively and show understanding of users' emotions
         2. Provide supportive, non-judgmental responses
@@ -64,20 +55,6 @@ class TherapyBot:
         - AASRA (India): +91-9820466726 or +91-22-27546669
         - Vandrevala Foundation Helpline (India): 1860 266 2345 or +91 9999 666 555"""
 
-        # Sentiment analysis prompt
-        self.sentiment_prompt = """You are an AI specialized in analyzing the emotional content and sentiment of therapy messages.
-
-        Analyze the following message and output a JSON object with these fields:
-        - mood: Must be exactly one of ["positive", "negative", "neutral"]
-        - primary_emotion: The most dominant specific emotion (e.g., joy, sadness, anger, anxiety, hope, gratitude, etc.)
-        - intensity: A number from 1-10 indicating how strong the emotion is (1=barely detectable, 10=extremely intense)
-        - sentiment_reasons: Brief explanation of why you classified it this way (max 2 sentences)
-
-        Focus on the overall emotional tone. Consider both explicit statements of feelings and subtler indications of the person's emotional state.
-        
-        Your output must be valid JSON only without any other text or explanation.
-        """
-
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", self.system_prompt),
             MessagesPlaceholder(variable_name="chat_history"),
@@ -91,7 +68,6 @@ class TherapyBot:
         )
 
         self.mood_history = []
-        self.crisis_threshold = 9  # Intensity threshold to trigger crisis response
 
     def detect_crisis(self, message: str) -> bool:
         crisis_keywords = [
@@ -120,78 +96,32 @@ class TherapyBot:
 
         Would you be willing to reach out to one of these services? They have trained professionals who can provide immediate support."""
 
-    def analyze_sentiment(self, message: str) -> Dict:
-        """Uses LLM to analyze the sentiment of a message"""
-        try:
-            # Create the full prompt for sentiment analysis
-            sentiment_input = f"Message to analyze: {message}\n\nProvide sentiment analysis in JSON format."
-            
-            # Get sentiment analysis from LLM
-            sentiment_response = self.sentiment_llm.invoke([
-                {"role": "system", "content": self.sentiment_prompt},
-                {"role": "user", "content": sentiment_input}
-            ])
-            
-            # Extract the JSON from the response
-            json_str = sentiment_response.content
-            
-            # Clean the response if it contains markdown code blocks
-            if "```json" in json_str:
-                json_str = json_str.split("```json")[1].split("```")[0].strip()
-            elif "```" in json_str:
-                json_str = json_str.split("```")[1].split("```")[0].strip()
-                
-            # Parse JSON
-            sentiment_data = json.loads(json_str)
-            
-            # Ensure we have all required fields
-            required_fields = ["mood", "primary_emotion", "intensity", "sentiment_reasons"]
-            for field in required_fields:
-                if field not in sentiment_data:
-                    sentiment_data[field] = "unknown" if field != "intensity" else 5
-                    
-            return sentiment_data
-            
-        except Exception as e:
-            # Fallback if any error occurs
-            st.error(f"Error in sentiment analysis: {str(e)}")
-            return {
-                "mood": "neutral",
-                "primary_emotion": "unknown",
-                "intensity": 5,
-                "sentiment_reasons": "Error in sentiment analysis"
-            }
-
     def track_mood(self, message: str, response: str):
         timestamp = datetime.now().isoformat()
-        
-        # Use LLM to analyze sentiment
-        sentiment_data = self.analyze_sentiment(message)
-        
+        mood_indicators = {
+            'positive': ['happy', 'better', 'good', 'great', 'hopeful', 'excited', 'joyful', 'content', 'optimistic'],
+            'negative': ['sad', 'depressed', 'anxious', 'worried', 'stressed', 'hopeless', 'down', 'angry',
+                         'frustrated'],
+            'neutral': ['okay', 'fine', 'normal', 'meh', 'so-so', 'neutral', 'indifferent']
+        }
+
+        mood = 'neutral'
+        for sentiment, words in mood_indicators.items():
+            if any(word in message.lower() for word in words):
+                mood = sentiment
+                break
+
         self.mood_history.append({
             'timestamp': timestamp,
-            'mood': sentiment_data["mood"],
-            'primary_emotion': sentiment_data["primary_emotion"],
-            'intensity': sentiment_data["intensity"],
-            'sentiment_reasons': sentiment_data["sentiment_reasons"],
+            'mood': mood,
             'message': message
         })
 
     def get_response(self, message: str) -> str:
-        # First, analyze sentiment to detect potential crisis
-        sentiment_data = self.analyze_sentiment(message)
-        
-        # Check for crisis either by keywords or high intensity negative emotions
-        is_crisis = (self.detect_crisis(message) or 
-                    (sentiment_data["mood"] == "negative" and 
-                     sentiment_data["intensity"] >= self.crisis_threshold))
-        
-        if is_crisis:
+        if self.detect_crisis(message):
             return self.get_crisis_response()
 
         response = self.conversation({"input": message})
-        
-        # Track mood after getting response
         self.track_mood(message, response['text'])
 
         return response['text']
@@ -202,83 +132,33 @@ class TherapyBot:
 
         df = pd.DataFrame(self.mood_history)
         df['timestamp'] = pd.to_datetime(df['timestamp'])
-        
+
         # Get mood counts
         mood_counts = df['mood'].value_counts().to_dict()
-        
-        # Get emotion distribution
-        emotion_counts = df['primary_emotion'].value_counts().to_dict()
-        
-        # Calculate average intensity
-        avg_intensity = df['intensity'].mean() if 'intensity' in df else 5
-        
-        # Get recent moods and emotions
-        recent_entries = df.tail(7)
-        recent_moods = recent_entries['mood'].tolist()
-        recent_emotions = recent_entries['primary_emotion'].tolist()
-        
-        # Calculate mood change trend
+
+        # Get mood trends (last 7 entries)
+        recent_moods = df.tail(7)['mood'].tolist()
+
+        # Calculate mood change
         mood_values = {'positive': 1, 'neutral': 0, 'negative': -1}
-        
-        # For overall trend calculation
-        if len(df) >= 3:
-            # Get last three entries for trend
-            last_three = df.tail(3)['mood'].map(mood_values).tolist()
-            if last_three[0] < last_three[1] < last_three[2]:
-                mood_trend = "improving"
-            elif last_three[0] > last_three[1] > last_three[2]:
-                mood_trend = "declining"
-            else:
-                mood_trend = "fluctuating"
-        else:
-            mood_trend = "insufficient data"
-            
-        # For simple last change
         if len(df) >= 2:
             last_mood = df.iloc[-1]['mood']
             previous_mood = df.iloc[-2]['mood']
-            mood_change = mood_values.get(last_mood, 0) - mood_values.get(previous_mood, 0)
+            mood_change = mood_values[last_mood] - mood_values[previous_mood]
         else:
             mood_change = 0
-            
-        # Generate insights
-        insights = []
-        if len(df) >= 3:
-            # Check if all recent moods are the same
-            if len(set(recent_moods[-3:])) == 1:
-                if recent_moods[-1] == 'positive':
-                    insights.append("Consistently positive mood in recent messages")
-                elif recent_moods[-1] == 'negative':
-                    insights.append("Consistently negative mood in recent messages")
-            
-            # Check for mood swings
-            if 'positive' in recent_moods and 'negative' in recent_moods:
-                insights.append("Mood fluctuations detected")
-                
-            # Check intensity trends
-            if 'intensity' in df.columns:
-                recent_intensities = recent_entries['intensity'].tolist()
-                if sum(recent_intensities[-3:]) / 3 > 7:
-                    insights.append("High emotional intensity in recent messages")
 
         return {
             "total_entries": len(df),
             "mood_distribution": mood_counts,
-            "emotion_distribution": emotion_counts,
             "latest_mood": df.iloc[-1]['mood'] if not df.empty else "No data",
-            "latest_emotion": df.iloc[-1]['primary_emotion'] if not df.empty else "No data",
-            "latest_intensity": float(df.iloc[-1]['intensity']) if not df.empty and 'intensity' in df else 5,
-            "average_intensity": float(avg_intensity),
             "recent_moods": recent_moods,
-            "recent_emotions": recent_emotions,
             "mood_change": mood_change,
-            "mood_trend": mood_trend,
-            "insights": insights,
-            "timestamp_data": df[['timestamp', 'mood', 'primary_emotion', 'intensity']].to_dict('records')
+            "timestamp_data": df[['timestamp', 'mood']].to_dict('records')
         }
 
 
-    def create_mood_timeline(mood_data):
+def create_mood_timeline(mood_data):
     if not mood_data:
         return None
 
@@ -353,71 +233,6 @@ class TherapyBot:
 
     return fig
 
-    if not mood_data:
-        return None
-
-    df = pd.DataFrame(mood_data)
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
-
-    color_map = {
-        'positive': '#4CAF50',
-        'neutral': '#FFC107',
-        'negative': '#f44336'
-    }
-
-    fig = px.line(df, x='timestamp', y='mood',
-                  title='Mood Timeline',
-                  color_discrete_map=color_map)
-                  
-    # Add intensity as a secondary axis if available
-    if 'intensity' in df.columns:
-        fig.add_scatter(
-            x=df['timestamp'],
-            y=df['intensity'],
-            mode='lines+markers',
-            name='Emotional Intensity',
-            yaxis="y2",
-            line=dict(color='#E91E63', width=1, dash='dot'),
-            marker=dict(size=8)
-        )
-        
-        # Add secondary y-axis
-        fig.update_layout(
-            yaxis2=dict(
-                title="Intensity",
-                titlefont=dict(color='#E91E63'),
-                tickfont=dict(color='#E91E63'),
-                anchor="x",
-                overlaying="y",
-                side="right",
-                range=[0, 10],
-                showgrid=False
-            )
-        )
-
-    fig.update_layout(
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        font_color='#ffffff',
-        title_font_color='#ffffff',
-        height=300,
-        xaxis=dict(
-            showgrid=True,
-            gridcolor='rgba(255,255,255,0.1)',
-            tickfont=dict(color='#ffffff')
-        ),
-        yaxis=dict(
-            showgrid=True,
-            gridcolor='rgba(255,255,255,0.1)',
-            tickfont=dict(color='#ffffff'),
-            categoryorder='array',
-            categoryarray=['negative', 'neutral', 'positive']
-        )
-    )
-
-    return fig
-
-
 def create_mood_distribution_pie(mood_distribution):
     if not mood_distribution:
         return None
@@ -431,7 +246,7 @@ def create_mood_distribution_pie(mood_distribution):
     fig = go.Figure(data=[go.Pie(
         labels=list(mood_distribution.keys()),
         values=list(mood_distribution.values()),
-        marker_colors=[colors.get(mood, '#9C27B0') for mood in mood_distribution.keys()],
+        marker_colors=[colors[mood] for mood in mood_distribution.keys()],
         textinfo='percent+label',
         hole=0.5,
     )])
@@ -445,49 +260,6 @@ def create_mood_distribution_pie(mood_distribution):
         title_font_color='#ffffff'
     )
 
-    return fig
-
-
-def create_emotion_bar_chart(emotion_distribution):
-    if not emotion_distribution:
-        return None
-        
-    # Sort by frequency
-    sorted_emotions = sorted(emotion_distribution.items(), key=lambda x: x[1], reverse=True)
-    emotions = [item[0] for item in sorted_emotions]
-    counts = [item[1] for item in sorted_emotions]
-    
-    # Use a colorful palette
-    colors = px.colors.qualitative.Set3
-    
-    fig = go.Figure(data=[
-        go.Bar(
-            x=emotions, 
-            y=counts,
-            marker_color=colors[:len(emotions)]
-        )
-    ])
-    
-    fig.update_layout(
-        title='Primary Emotions',
-        xaxis_title='Emotion',
-        yaxis_title='Frequency',
-        height=300,
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        font_color='#ffffff',
-        title_font_color='#ffffff',
-        xaxis=dict(
-            tickangle=-45,
-            tickfont=dict(color='#ffffff')
-        ),
-        yaxis=dict(
-            showgrid=True,
-            gridcolor='rgba(255,255,255,0.1)',
-            tickfont=dict(color='#ffffff')
-        )
-    )
-    
     return fig
 
 
@@ -636,34 +408,6 @@ def main():
         h1, h2, h3, h4, h5, h6 {
             color: white !important;
         }
-        
-        /* Insight styling */
-        .insight-item {
-            background: rgba(255, 255, 255, 0.1);
-            border-left: 4px solid #9C27B0;
-            padding: 10px 15px;
-            margin: 5px 0;
-            border-radius: 0 8px 8px 0;
-        }
-        
-        /* Intensity meter styling */
-        .intensity-meter {
-            height: 8px;
-            border-radius: 4px;
-            margin: 8px 0;
-            background: linear-gradient(to right, #4CAF50, #FFC107, #f44336);
-        }
-        
-        .intensity-marker {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            background: white;
-            border: 2px solid #333;
-            position: relative;
-            top: -10px;
-            transform: translateX(-50%);
-        }
         </style>
     """, unsafe_allow_html=True)
 
@@ -721,18 +465,15 @@ def main():
     # Analysis Column
     with col2:
         st.markdown('<div class="analysis-card">', unsafe_allow_html=True)
-        st.markdown('<h2 style="color: white; text-align: center;">Emotional Analysis</h2>', unsafe_allow_html=True)
+        st.markdown('<h2 style="color: white; text-align: center;">Mood Analysis</h2>', unsafe_allow_html=True)
 
         if 'bot' in st.session_state:
             mood_summary = st.session_state.bot.get_mood_summary()
             if "message" in mood_summary:
                 st.info(mood_summary["message"])
             else:
-                # Current Mood and Emotion Indicator
+                # Current Mood Indicator
                 latest_mood = mood_summary['latest_mood']
-                latest_emotion = mood_summary['latest_emotion']
-                latest_intensity = mood_summary['latest_intensity']
-                
                 mood_colors = {
                     'positive': '#4CAF50',
                     'neutral': '#FFC107',
@@ -747,35 +488,25 @@ def main():
                 st.markdown(
                     f'<div class="mood-indicator" style="background: linear-gradient(135deg, {mood_colors[latest_mood]}33, {mood_colors[latest_mood]}11)">'
                     f'<h3>Current Mood {mood_emojis[latest_mood]}</h3>'
-                    f'<p style="font-size: 1.2rem;">{latest_emotion.capitalize()} ({latest_mood.capitalize()})</p>'
-                    f'<div class="intensity-meter"></div>'
-                    f'<div class="intensity-marker" style="margin-left: {latest_intensity * 10}%;"></div>'
-                    f'<p style="font-size: 0.9rem; margin-top: 5px;">Intensity: {latest_intensity}/10</p>'
+                    f'<p style="font-size: 1.2rem;">{latest_mood.capitalize()}</p>'
                     '</div>',
                     unsafe_allow_html=True
                 )
 
-                # Mood trend indicator
-                mood_trend = mood_summary['mood_trend']
-                trend_icons = {
-                    "improving": "📈 Improving",
-                    "declining": "📉 Declining",
-                    "fluctuating": "📊 Fluctuating",
-                    "insufficient data": "📋 Insufficient data"
-                }
-                
-                st.markdown(
-                    f'<div class="mood-indicator" style="background: rgba(255, 255, 255, 0.1)">Mood trend: {trend_icons[mood_trend]}</div>',
-                    unsafe_allow_html=True)
-
-                # Insights
-                if mood_summary['insights']:
-                    st.markdown("### Insights")
-                    for insight in mood_summary['insights']:
-                        st.markdown(
-                            f'<div class="insight-item">{insight}</div>',
-                            unsafe_allow_html=True
-                        )
+                # Mood change indicator
+                mood_change = mood_summary['mood_change']
+                if mood_change > 0:
+                    st.markdown(
+                        '<div class="mood-indicator" style="background: rgba(76, 175, 80, 0.1)">Mood trending upward 📈</div>',
+                        unsafe_allow_html=True)
+                elif mood_change < 0:
+                    st.markdown(
+                        '<div class="mood-indicator" style="background: rgba(244, 67, 54, 0.1)">Mood trending downward 📉</div>',
+                        unsafe_allow_html=True)
+                else:
+                    st.markdown(
+                        '<div class="mood-indicator" style="background: rgba(255, 193, 7, 0.1)">Mood stable ➡</div>',
+                        unsafe_allow_html=True)
 
                 # Visualizations
                 st.markdown('<div class="chart-container">', unsafe_allow_html=True)
@@ -783,13 +514,6 @@ def main():
                 pie_chart = create_mood_distribution_pie(mood_summary['mood_distribution'])
                 if pie_chart:
                     st.plotly_chart(pie_chart, use_container_width=True)
-                st.markdown('</div>', unsafe_allow_html=True)
-
-                st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-                st.markdown("### Emotion Analysis")
-                emotion_chart = create_emotion_bar_chart(mood_summary['emotion_distribution'])
-                if emotion_chart:
-                    st.plotly_chart(emotion_chart, use_container_width=True)
                 st.markdown('</div>', unsafe_allow_html=True)
 
                 st.markdown('<div class="chart-container">', unsafe_allow_html=True)
@@ -804,7 +528,6 @@ def main():
                     f'<div class="mood-indicator">'
                     f'<h3>Session Stats</h3>'
                     f'<p>Total messages: {mood_summary["total_entries"]}</p>'
-                    f'<p>Average emotional intensity: {mood_summary["average_intensity"]:.1f}/10</p>'
                     '</div>',
                     unsafe_allow_html=True
                 )
