@@ -107,7 +107,7 @@ class TherapyBot:
         Message: "{message}"
         """
 
-       mood_llm = ChatGroq(
+        mood_llm = ChatGroq(
             model="llama-3.1-8b-instant",
             temperature=0.2, 
             groq_api_key=st.secrets["groq_api_key2"]
