@@ -98,18 +98,29 @@ class TherapyBot:
 
     def track_mood(self, message: str, response: str):
         timestamp = datetime.now().isoformat()
-        mood_indicators = {
-            'positive': ['happy', 'better', 'good', 'great', 'hopeful', 'excited', 'joyful', 'content', 'optimistic'],
-            'negative': ['sad', 'depressed', 'anxious', 'worried', 'stressed', 'hopeless', 'down', 'angry',
-                         'frustrated'],
-            'neutral': ['okay', 'fine', 'normal', 'meh', 'so-so', 'neutral', 'indifferent']
-        }
+        mood_prompt = f"""
+        Analyze the emotional content of this message and classify the primary mood as exactly one of:
+        'positive', 'negative', or 'neutral'.
+        Respond with only that single word.
+        Output should be either positive or negative or neutral.
+        
+        Message: "{message}"
+        """
 
-        mood = 'neutral'
-        for sentiment, words in mood_indicators.items():
-            if any(word in message.lower() for word in words):
-                mood = sentiment
-                break
+       mood_llm = ChatGroq(
+            model="llama-3.1-8b-instant",
+            temperature=0.2, 
+            groq_api_key=st.secrets["groq_api_key2"]
+        )
+
+        mood_response = mood_llm.invoke(mood_prompt)
+
+        mood_text = mood_response.content.strip().lower()
+        
+        if mood_text in ['positive', 'negative', 'neutral']:
+            mood = mood_text
+        else:
+            mood = 'neutral'
 
         self.mood_history.append({
             'timestamp': timestamp,
